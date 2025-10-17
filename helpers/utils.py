@@ -8,7 +8,6 @@ from pprint import pprint
 
 import psutil
 from helpers.database.postgresql_client import PostgreSQLClient
-from helpers.openflow import *
 from helpers.configuration import *
 import subprocess
 import win32api
