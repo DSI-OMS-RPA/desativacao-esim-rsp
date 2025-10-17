@@ -2,13 +2,10 @@
 import os
 import sys
 
-import os, sys
-
 # Ensure the project root directory to sys.path if it's not already there
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-
 
 from core.business_rules import EsimRange, RetryPolicy, ErrorHandler
 
@@ -42,19 +39,23 @@ def test_esim_range_invalid():
 
 
 def test_retry_policy_behavior():
-    rp = RetryPolicy(max_attempts=3, backoff_factor=2)
+    # Nota: RetryPolicy usa convention 1-based attempts e delay_seconds default=5.0
+    rp = RetryPolicy(max_attempts=3, delay_seconds=5.0, backoff_factor=2)
 
     # can_retry: attempts menores que max_attempts são permitidas
-    assert rp.can_retry(0) is True
+    assert rp.can_retry(0) is True   # ainda permitido (0 tratada como antes da primeira tentativa)
     assert rp.can_retry(1) is True
     assert rp.can_retry(2) is True
     # tentativa igual ou superior ao limite não permite retentar
     assert rp.can_retry(3) is False
 
-    # backoff: verificar potenciação
-    assert rp.next_delay(0) == 1  # 2 ** 0
-    assert rp.next_delay(1) == 2  # 2 ** 1
-    assert rp.next_delay(2) == 4  # 2 ** 2
+    # backoff: verificar delays usando a fórmula delay_seconds * backoff_factor ** (attempt - 1)
+    # attempt = 1 -> 5 * 2**0 = 5
+    # attempt = 2 -> 5 * 2**1 = 10
+    # attempt = 3 -> 5 * 2**2 = 20
+    assert rp.next_delay(1) == 5.0
+    assert rp.next_delay(2) == 10.0
+    assert rp.next_delay(3) == 20.0
 
 
 def test_error_handler_structure():
