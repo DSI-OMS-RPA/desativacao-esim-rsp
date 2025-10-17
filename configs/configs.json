@@ -1,12 +1,21 @@
 {
     "process": {
-        "name": "Reset Password e Desbloqueio de Conta SAP",
-        "identifier": "AGT008DSI",
-        "description": "Processo de reset da password e desbloqueio de contas dos utilizadores no sistema SAP.",
-        "version": "2.1.0",
-        "execMode": "everyTime",
-        "execTime": "",
-        "timezone": "Africa/Cape_Verde"
+        "name": "Desativação de Cartões eSIM - RSP",
+        "identifier": "AGT009DSI",
+        "description": "Processo automatizado de desativação de cartões eSIM na plataforma RSP (Remote SIM Provisioning), com base em dados de desativação provenientes do NGIN/Siebel.",
+        "version": "1.0.0",
+        "execMode": "daily",
+        "execTime": "21:00",
+        "timezone": "Atlantic/Cape_Verde"
+    },
+    "retry_policy": {
+        "max_retries": 3,
+        "delay_seconds": 5,
+        "backoff_factor": 2
+    },
+    "esim_range": {
+        "start": 89238010000101000000,
+        "end": 89238010000101999999
     },
     "report": {
         "from_mail": "dsi-suporte-rpa@cvt.cv",
@@ -22,64 +31,7 @@
         "to": "alertas.rpa@cvt.cv",
         "subject": "Erro: Logs eFatura SAP"
     },
-    "notify": {
-        "dev": {
-            "email": "alertas.rpa@cvt.cv",
-            "subject": "Robô finalizado | AGT008DSI",
-            "message_body": "<p><strong>ALERTA:</strong> O Processo SAP <strong>SU01</strong> foi concluído e executado com êxito.</p><p>Atenciosamente,<br>Equipe Suporte RPA</p>",
-            "recipient_email": "dsi-suporte-rpa@cvt.cv;DSI-Support-SAP@cvt.cv"
-        },
-        "team":{
-            "email": "DSI-Support-SAP@cvt.cv",
-            "from": "dsi-suporte-rpa@cvt.cv",
-            "message_body": "<p>Bom dia, <br><br>O ticket {ticket} já foi processado, favor dar seguimento no ITSM.<br><br><br><p>Cumprimentos,<br>DSI-OMS</p>"
-        }
-    },
-    "ticket_catalog":[
-        {
-            "name": "Desbloqueio de Conta SAP",
-            "code": "SABU01.01.17.05",
-            "type": "unlock_only",
-            "description": "Processo de desbloqueio de conta SAP"
-        },
-        {
-            "name": "Reset palavra-passe SAP",
-            "code": "SABU01.01.17.06",
-            "type": "password_reset",
-            "description": "Processo de reset de palavra-passe SAP"
-        }
-    ],
-    "sap_app": {
-        "path": "saplogon.exe",
-        "client": "110",
-        "language": "PT",
-        "transaction_code": "SU01",
-        "env": "SAP_PRD",
-        "max_wait_time": 90,
-        "retry_interval": 3
-    },
     "database": {
-        "ldap": {
-            "table": "platforms",
-            "where": {
-                "clause": "identifier = %s",
-                "params": "CVT_LDAP"
-            }
-        },
-        "itsm": {
-            "table": "tickets_itsm",
-            "where": {
-                "clause": "catalog IN (%s, %s) AND processed = %s",
-                "params": ["SABU01.01.17.05", "SABU01.01.17.06", "0"]
-            }
-        },
-        "sap": {
-            "table": "platforms",
-            "where": {
-                "clause": "identifier = %s",
-                "params": "SAP_PRD"
-            }
-        },
         "webmail": {
             "table": "platforms",
             "where": {
