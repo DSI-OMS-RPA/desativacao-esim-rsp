@@ -1,10 +1,12 @@
+from datetime import datetime
 import os
-import hashlib
-import logging
+import json
 import uuid
 import time
+import hashlib
+import logging
 import requests
-import json
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from tenacity import retry, stop_after_attempt, wait_exponential
 from dotenv import load_dotenv
@@ -27,15 +29,47 @@ class ESIMRSPClient:
     This client supports various operations defined in the eSIM.plus RSP Interface Manual.
     """
 
-    def __init__(self, environment: str = 'test'):
+    def __init__(self, environment: str = 'test', env_path: Optional[str] = None):
         """
         Initialize the RSP client with environment-specific configuration.
 
-        :param environment: Environment to use ('test' or 'prod')
+        Attributes:
+            environment (str): 'test' or 'prod' to select the environment
+            env_path (str, optional): Path to the .env file
+
+        Raises:
+            ValueError: If an invalid environment is provided
+            RSPClientAuthenticationError: If authentication fails
+            RSPClientRequestError: For other request-related errors
+
+        Returns:
+            None
         """
-        load_dotenv()
+
+        # Carregar .env a partir de configs/.env por omissão
+        if env_path:
+            env_file = Path(env_path)
+        else:
+            project_root = Path(__file__).resolve().parent.parent
+            env_file = project_root / "configs" / ".env"
+
+        if env_file.exists():
+            load_dotenv(dotenv_path=env_file)
+            logger.info(f".env carregado a partir de: {env_file}")
+        else:
+            # fallback: carregar variáveis de ambiente do processo
+            load_dotenv()  # tenta carregar do cwd se existir
+            logger.warning(f".env não encontrado em {env_file}, carregado fallback padrão (cwd).")
+
         self.environment = environment
+        # obtém credenciais (p.ex. TEST_ACCESS_KEY, TEST_SECRET_KEY, TEST_URL)
         self.access_key, self.secret_key, self.base_url = self._get_environment_config()
+
+        # configurar política de retry local (valores por defeito)
+        # preferível injetar esta policy de configs.json via rules_from_config
+        from core.business_rules import get_default_rules
+        _, retry_policy = get_default_rules()  # retorna (EsimRange, RetryPolicy)
+        self.retry_policy = retry_policy
 
     def _get_environment_config(self) -> tuple:
         """
@@ -478,3 +512,77 @@ class ESIMRSPClient:
             }
         }
         return self._make_request(endpoint, body=body)
+
+    def expire_order(self, iccid: str, final_status: str = "Unavailable", matchingId: Optional[str] = None, eid: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Chama o endpoint ExpireOrder para marcar o perfil como 'Unavailable' ou 'Available'.
+        Usa retry manual baseado em self.retry_policy para maior controlo e logging.
+
+        :param iccid: ICCID do perfil a expirar (string)
+        :param final_status: 'Unavailable' (default) ou 'Available'
+        :param matchingId: (opcional) matchingId do order, se disponível
+        :param eid: (opcional) EID do eUICC
+        :return: dicionário com resultado (status, attempts, http_status, response)
+        """
+        endpoint = "/redtea/rsp2/es2plus/order/expire"
+        payload = {
+            "iccid": iccid,
+            "finalProfileStatusIndicator": final_status,
+            "header": {
+                "functionRequesterIdentifier": str(uuid.uuid4()),
+                "functionCallIdentifier": "expireOrder"
+            }
+        }
+        # adicionar campos condicionais se fornecidos
+        if matchingId:
+            payload["matchingId"] = matchingId
+        if eid:
+            payload["eid"] = eid
+
+        attempts = 0
+        last_exception = None
+        start_ts = datetime.utcnow().isoformat() + "Z"
+
+        while True:
+            attempts += 1
+            try:
+                logger.info(f"[ExpireOrder] ICCID={iccid} attempt={attempts} payload={payload}")
+                # Usa o _make_request existente para juntar headers e fazer a request
+                response = self._make_request(endpoint=endpoint, method='POST', body=payload)
+                # Log estruturado do sucesso
+                result = {
+                    "iccid": iccid,
+                    "status": "success",
+                    "attempts": attempts,
+                    "http_status": 200,
+                    "response": response,
+                    "start_ts": start_ts,
+                    "end_ts": datetime.utcnow().isoformat() + "Z"
+                }
+                logger.info(f"[ExpireOrder] Success ICCID={iccid} attempts={attempts}")
+                return result
+
+            except Exception as exc:
+                last_exception = exc
+                logger.warning(f"[ExpireOrder] ICCID={iccid} attempt={attempts} failed: {exc}")
+
+                # se ainda é permitido retentar
+                if self.retry_policy.can_retry(attempts):
+                    delay = self.retry_policy.next_delay(attempts)
+                    logger.info(f"[ExpireOrder] ICCID={iccid} retrying in {delay:.1f}s (attempt {attempts+1})")
+                    time.sleep(delay)
+                    continue
+                else:
+                    # Registo final de falha e retorno com erro estruturado
+                    payload_err = {
+                        "iccid": iccid,
+                        "status": "failed",
+                        "attempts": attempts,
+                        "http_status": None,
+                        "error": str(last_exception),
+                        "start_ts": start_ts,
+                        "end_ts": datetime.utcnow().isoformat() + "Z"
+                    }
+                    logger.error(f"[ExpireOrder] ICCID={iccid} failed after {attempts} attempts: {last_exception}")
+                    # opcional: lançar exceção ou devolver payload_err — escolhe conforme política
+                    return payload_err
