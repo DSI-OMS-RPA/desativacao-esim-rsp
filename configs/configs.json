@@ -13,23 +13,27 @@
         "delay_seconds": 5,
         "backoff_factor": 2
     },
+    "env_path": "configs/.env",
     "esim_range": {
-        "start": 89238010000101000000,
-        "end": 89238010000101999999
+        "start": 8923801000101000000,
+        "end": 8923801000101999999
     },
     "report": {
         "from_mail": "dsi-suporte-rpa@cvt.cv",
-        "to": "",
+        "to": "joselito.coutinho@cvt.cv",
         "cc": [
-            "alertas.rpa@cvt.cv",
-            "DSI-Support-SAP@cvt.cv"
+            "luis.varela@cvt.cv",
+            "alertas.rpa@cvt.cv"
         ],
-        "subject": "AGT008DSI - Relatório de Execução"
+        "subject": "Desativação de Cartões eSIM - RSP"
     },
     "error_report": {
         "from_mail": "dsi-suporte-rpa@cvt.cv",
         "to": "alertas.rpa@cvt.cv",
-        "subject": "Erro: Logs eFatura SAP"
+        "subject": "Erro: Desativação de Cartões eSIM - RSP"
+    },
+    "no_files_alert": {
+        "recipients": ["dsi-support-crm-aia-oss@cvt.cv"]
     },
     "database": {
         "webmail": {
