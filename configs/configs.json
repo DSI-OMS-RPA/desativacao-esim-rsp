@@ -3,9 +3,9 @@
         "name": "Desativação de Cartões eSIM - RSP",
         "identifier": "AGT009DSI",
         "description": "Processo automatizado de desativação de cartões eSIM na plataforma RSP (Remote SIM Provisioning), com base em dados de desativação provenientes do NGIN/Siebel.",
-        "version": "1.0.0",
+        "version": "1.2.1",
         "execMode": "daily",
-        "execTime": "21:00",
+        "execTime": "08:30",
         "timezone": "Atlantic/Cape_Verde"
     },
     "retry_policy": {
