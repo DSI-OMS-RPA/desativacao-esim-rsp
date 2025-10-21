@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ProcessConfig:
     """Configuration for the deactivation process."""
+    process_name: str = "Desativação de Cartões eSIM - RSP"
     batch_size: int = 10
     rate_limit_sleep: float = 1.0
     success_threshold: float = 0.95
@@ -114,6 +115,7 @@ class ESIMDeactivationOrchestrator:
             # Create process configuration
             process_cfg = self.json_config.get("process", {})
             self.config = ProcessConfig(
+                process_name=process_cfg.get("name", "Desativação de Cartões eSIM - RSP"),
                 batch_size=process_cfg.get("batch_size", 10),
                 rate_limit_sleep=process_cfg.get("rate_limit_sleep", 1.0),
                 success_threshold=process_cfg.get("success_threshold", 0.95),
@@ -362,40 +364,125 @@ class ESIMDeactivationOrchestrator:
             )
 
             try:
-                # Call RSP API with retry logic
+                # Retry loop
                 for attempt in range(1, self.retry_policy.max_attempts + 1):
                     try:
-                        self.logger.info(f"Attempting to deactivate ICCID {record.iccid} (attempt {attempt})")
-
-                        response = self.rsp_client.expire_order(
-                            iccid=record.iccid
+                        self.logger.info(
+                            f"Attempting to deactivate ICCID {record.iccid} "
+                            f"(attempt {attempt}/{self.retry_policy.max_attempts})"
                         )
 
-                        result.status = "SUCCESS"
+                        response = self.rsp_client.expire_order(iccid=record.iccid)
+                        result.retry_attempts = attempt
                         result.api_response = response
-                        self.logger.info(f"Successfully deactivated ICCID {record.iccid}")
-                        break
+
+                        # Extract business status from nested response structure
+                        exec_status = response.get("response", {}).get("header", {}).get("functionExecutionStatus", {})
+                        status = exec_status.get("status")
+
+                        if status == "Executed-Success":
+                            result.status = "SUCCESS"
+                            result.success_reason = "DEACTIVATED"
+                            self.logger.info(
+                                f"Successfully deactivated ICCID {record.iccid} - "
+                                f"profile marked as unavailable"
+                            )
+                            break
+
+                        elif status == "Failed":
+                            status_data = exec_status.get("statusCodeData", {})
+                            subject_code = status_data.get('subjectCode', '')
+                            reason_code = status_data.get('reasonCode', '')
+                            error_code = f"{subject_code}/{reason_code}"
+                            error_msg = status_data.get("message", "Unknown error")
+
+                            # Business case: Expire Order not Exist (8.2.1/3.3)
+                            # Interpretation: The order to expire doesn't exist because
+                            # the profile is already in an expired/unavailable state
+                            if error_code == "8.2.1/3.3":
+                                result.status = "SUCCESS"
+                                result.success_reason = "ALREADY_EXPIRED"
+                                self.logger.info(
+                                    f"ICCID {record.iccid}: Expire order not found [{error_code}] - "
+                                    f"profile already expired or unavailable (treated as success)"
+                                )
+                                break
+
+                            # Other business errors - retry
+                            else:
+                                result.error_message = f"[{error_code}] {error_msg}"
+                                self.logger.error(
+                                    f"Business error for ICCID {record.iccid}: "
+                                    f"[{error_code}] {error_msg}"
+                                )
+
+                                if attempt >= self.retry_policy.max_attempts:
+                                    result.status = "FAILED"
+                                    self.logger.error(
+                                        f"Max retries reached for ICCID {record.iccid}"
+                                    )
+                                    break
+                                else:
+                                    delay = self.retry_policy.next_delay(attempt)
+                                    self.logger.warning(
+                                        f"Retrying ICCID {record.iccid} in {delay}s..."
+                                    )
+                                    time.sleep(delay)
+
+                        else:
+                            # Status is None or unexpected value
+                            result.status = "FAILED"
+                            result.error_message = f"Unexpected API status: {status}"
+                            self.logger.error(
+                                f"Unexpected status '{status}' for ICCID {record.iccid}. "
+                                f"Response keys: {list(response.keys())}"
+                            )
+                            break
 
                     except RSPClientError as e:
                         result.retry_attempts = attempt
 
                         if attempt >= self.retry_policy.max_attempts:
                             result.status = "FAILED"
-                            result.error_message = str(e)
-                            self.logger.error(f"Failed to expire ICCID {record.iccid} after {attempt} attempts: {e}")
+                            result.error_message = f"RSP Client Error: {str(e)}"
+                            self.logger.error(
+                                f"Failed to expire ICCID {record.iccid} after "
+                                f"{attempt} attempts: {e}"
+                            )
                         else:
-                            # Wait before retry with exponential backoff
                             delay = self.retry_policy.next_delay(attempt)
-                            self.logger.warning(f"Retry {attempt} failed for {record.iccid}, waiting {delay}s...")
+                            self.logger.warning(
+                                f"RSP error for ICCID {record.iccid} (attempt {attempt}), "
+                                f"retrying in {delay}s: {e}"
+                            )
                             time.sleep(delay)
 
             except Exception as e:
                 result.status = "FAILED"
                 result.error_message = f"Unexpected error: {str(e)}"
-                self.logger.error(f"Unexpected error processing {record.iccid}: {e}")
+                self.logger.error(
+                    f"Unexpected error processing ICCID {record.iccid}: {e}",
+                    exc_info=True
+                )
 
-            # Calculate processing time
+            # Log final outcome
             result.processing_time_ms = int((time.time() - start_time) * 1000)
+
+            # Enhanced logging with success reason
+            if result.status == "SUCCESS" and result.success_reason:
+                self.logger.info(
+                    f"Finished processing ICCID {record.iccid}: "
+                    f"status={result.status} ({result.success_reason}), "
+                    f"attempts={result.retry_attempts}, time={result.processing_time_ms}ms"
+                )
+            else:
+                self.logger.info(
+                    f"Finished processing ICCID {record.iccid}: "
+                    f"status={result.status}, attempts={result.retry_attempts}, "
+                    f"time={result.processing_time_ms}ms"
+                )
+            self.logger.info(f"{'='*80}")
+
             results.append(result)
 
         return results
@@ -586,9 +673,13 @@ class ESIMDeactivationOrchestrator:
     def _cleanup_staging(self):
         """Clean up staging directory."""
         try:
+
+            # Files to preserve during cleanup
+            PRESERVE_FILES = {'.gitignore', '.gitkeep', '.ignore'}
+
             staging_path = Path(self.config.staging_dir)
             for file in staging_path.glob("*"):
-                if file.is_file():
+                if file.is_file() and file.name not in PRESERVE_FILES:
                     file.unlink()
                     self.logger.debug(f"Deleted staging file: {file}")
             self.logger.info("Cleaned staging directory")
@@ -606,7 +697,7 @@ class ESIMDeactivationOrchestrator:
         exit_code = 0
 
         try:
-            # 1. INITIALIZATION - Acquire lock
+            # 1. INITIALIZATION - Acquire lock (secure single instance execution)
             lock = ProcessLock()
             lock.acquire()
             self.logger.info("Process lock acquired")
@@ -630,18 +721,18 @@ class ESIMDeactivationOrchestrator:
                         # Change "to" field values with "recipients" list
                         self.email_config['to'] = recipients
                         self.email_config['cc'] = []
-                        self.email_config['subject'] = f"[ALERTA] Nenhum ficheiro XML encontrado - {datetime.now().strftime('%Y-%m-%d')}"
+                        self.email_config['subject'] = f"[ALERTA] {self.config.process_name}"
 
                         # Prepare alert details
                         alert_type="warning"
-                        alert_title="Alerta de Ficheiros Não Encontrados"
+                        alert_title=f"Nenhum ficheiro XML encontrado"
                         alert_message="Nenhum ficheiro foi encontrado no servidor FTP para processamento.</br>Por favor, verifique se os ficheiros foram disponibilizados corretamente."
                         summary_data = [
                             { "label": "Data/Hora", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S') },
                             { "label": "Caminho FTP", "value": self.config.ftp_root_path },
                             { "label": "Padrão esperado", "value": self.config.file_pattern }
                         ]
-                        environment=self.config.environment,
+                        environment=str(self.config.environment)
                         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
                         # Send email
@@ -651,7 +742,7 @@ class ESIMDeactivationOrchestrator:
                             alert_title=alert_title,
                             alert_message=alert_message,
                             summary_data=summary_data,
-                            environment='Production',
+                            environment=environment.upper(),
                             timestamp=timestamp
                         )
                         self.logger.info("No files alert sent successfully")

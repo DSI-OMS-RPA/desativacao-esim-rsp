@@ -6,6 +6,7 @@ Generates CSV reports, summaries, and prepares email notifications.
 """
 
 import csv
+from itertools import chain
 import json
 import logging
 from datetime import datetime, timedelta
@@ -28,30 +29,41 @@ class ProcessingResult:
     status: str  # SUCCESS, FAILED, INVALID, SKIPPED
     api_response: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
+    success_reason: Optional[str] = None  # "EXPIRED", "DEACTIVATED", "ALREADY_EXPIRED", etc.
     retry_attempts: int = 0
     processing_time_ms: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for CSV/JSON export."""
         data = asdict(self)
-        data['timestamp'] = self.timestamp.isoformat()
+        data['timestamp'] = self.timestamp.strftime('%Y-%m-%d %H:%M:%S') if self.timestamp else ''
         data['api_response'] = json.dumps(self.api_response) if self.api_response else None
         return data
-
 
 @dataclass
 class ProcessingStats:
     """Statistics for the entire processing run."""
+    # File statistics
     total_files: int = 0
     processed_files: int = 0
     failed_files: int = 0
+
+    # Record statistics
     total_records: int = 0
     total_esim: int = 0
+    out_of_range: int = 0
+
+    # Processing results
     successful: int = 0
     failed: int = 0
     invalid: int = 0
     skipped: int = 0
-    out_of_range: int = 0
+
+    # Success breakdown
+    deactivated: int = 0
+    already_expired: int = 0
+
+    # Timing statistics
     avg_processing_time_ms: float = 0
     total_processing_time_s: float = 0
     start_time: Optional[datetime] = None
@@ -60,17 +72,18 @@ class ProcessingStats:
     @property
     def success_rate(self) -> float:
         """Calculate success rate percentage."""
-        if self.total_esim == 0:
-            return 0.0
-        return (self.successful / self.total_esim) * 100
+        processable = self.successful + self.failed
+        return (self.successful / processable * 100) if processable > 0 else 0.0
 
     @property
-    def duration(self) -> Optional[timedelta]:
-        """Calculate total processing duration."""
+    def duration(self) -> str:
+        """Calculate duration between start and end time."""
         if self.start_time and self.end_time:
-            return self.end_time - self.start_time
-        return None
-
+            delta = self.end_time - self.start_time
+            hours, remainder = divmod(int(delta.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return "N/A"
 
 class ReportGenerator:
     """
@@ -93,8 +106,8 @@ class ReportGenerator:
         logger.info(f"ReportGenerator initialized with dir: {self.report_dir}")
 
     def generate_csv(self,
-                    results: List[ProcessingResult],
-                    filename: Optional[str] = None) -> str:
+                results: List[ProcessingResult],
+                filename: Optional[str] = None) -> str:
         """
         Generate a detailed CSV report of processing results.
 
@@ -114,11 +127,18 @@ class ReportGenerator:
             with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
                 if not results:
                     # Write empty file with headers only
-                    fieldnames = ['iccid', 'imsi', 'msisdn', 'status', 'timestamp',
-                                 'error_message', 'file_source']
+                    fieldnames = ['iccid', 'imsi', 'msisdn', 'status', 'success_reason',
+                                'error_message', 'retry_attempts', 'processing_time_ms',
+                                'file_source', 'timestamp']
                 else:
                     # Get all unique fields from results
                     fieldnames = list(results[0].to_dict().keys())
+
+                    # Ensure success_reason is in fieldnames if not already present
+                    if 'success_reason' not in fieldnames and 'status' in fieldnames:
+                        # Insert success_reason right after status
+                        status_idx = fieldnames.index('status')
+                        fieldnames.insert(status_idx + 1, 'success_reason')
 
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
@@ -228,8 +248,8 @@ class ReportGenerator:
             raise
 
     def calculate_stats(self,
-                       results: List[ProcessingResult],
-                       files_info: Optional[Dict[str, Any]] = None) -> ProcessingStats:
+                   results: List[ProcessingResult],
+                   files_info: Optional[Dict[str, Any]] = None) -> ProcessingStats:
         """
         Calculate processing statistics from results.
 
@@ -257,6 +277,14 @@ class ReportGenerator:
         stats.skipped = status_counts.get('SKIPPED', 0)
         stats.out_of_range = status_counts.get('OUT_OF_RANGE', 0)
 
+        # Count by success reason (breakdown of successful operations)
+        success_reason_counts = Counter(
+            r.success_reason for r in results
+            if r.status == 'SUCCESS' and r.success_reason
+        )
+        stats.deactivated = success_reason_counts.get('DEACTIVATED', 0)
+        stats.already_expired = success_reason_counts.get('ALREADY_EXPIRED', 0)
+
         # eSIM specific
         stats.total_esim = stats.successful + stats.failed
 
@@ -273,8 +301,11 @@ class ReportGenerator:
                 stats.start_time = min(timestamps)
                 stats.end_time = max(timestamps)
 
-        logger.info(f"Statistics calculated: {stats.total_records} records, "
-                   f"{stats.success_rate:.1f}% success rate")
+        logger.info(
+            f"Statistics calculated: {stats.total_records} records, "
+            f"{stats.success_rate:.1f}% success rate "
+            f"(Deactivated: {stats.deactivated}, Already Expired: {stats.already_expired})"
+        )
 
         return stats
 
@@ -288,49 +319,57 @@ class ReportGenerator:
         Returns:
             Formatted text summary
         """
-        duration_str = "N/A"
-        if stats.duration:
-            total_seconds = int(stats.duration.total_seconds())
-            hours, remainder = divmod(total_seconds, 3600)
-            minutes, seconds = divmod(remainder, 60)
-            duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        # stats.duration já retorna string formatada "HH:MM:SS"
+        duration_str = stats.duration
+
+        # Format date range
+        date_range = "N/A"
+        if stats.start_time and stats.end_time:
+            if stats.start_time.date() == stats.end_time.date():
+                # Same day
+                date_range = f"{stats.start_time:%Y-%m-%d %H:%M:%S} to {stats.end_time:%H:%M:%S}"
+            else:
+                # Different days
+                date_range = f"{stats.start_time:%Y-%m-%d %H:%M:%S} to {stats.end_time:%Y-%m-%d %H:%M:%S}"
 
         summary = f"""
-╔══════════════════════════════════════════════════════════════╗
-║           eSIM DEACTIVATION PROCESS - SUMMARY               ║
-╚══════════════════════════════════════════════════════════════╝
+    ╔══════════════════════════════════════════════════════════════╗
+    ║           eSIM DEACTIVATION PROCESS - SUMMARY               ║
+    ╚══════════════════════════════════════════════════════════════╝
 
-📅 Date: {stats.start_time:%Y-%m-%d %H:%M:%S} to {stats.end_time:%H:%M:%S} if stats.start_time and stats.end_time else 'N/A'
-⏱️  Duration: {duration_str}
+    📅 Date: {date_range}
+    ⏱️  Duration: {duration_str}
 
-FILES PROCESSED:
-├─ Total Files: {stats.total_files}
-├─ Processed: {stats.processed_files}
-└─ Failed: {stats.failed_files}
+    FILES PROCESSED:
+    ├─ Total Files: {stats.total_files}
+    ├─ Processed: {stats.processed_files}
+    └─ Failed: {stats.failed_files}
 
-RECORDS SUMMARY:
-├─ Total Records: {stats.total_records:,}
-├─ Total eSIM: {stats.total_esim:,}
-├─ Out of Range: {stats.out_of_range:,}
-└─ Invalid: {stats.invalid:,}
+    RECORDS SUMMARY:
+    ├─ Total Records: {stats.total_records:,}
+    ├─ Total eSIM: {stats.total_esim:,}
+    ├─ Out of Range: {stats.out_of_range:,}
+    └─ Invalid: {stats.invalid:,}
 
-PROCESSING RESULTS:
-├─ ✅ Successful: {stats.successful:,} ({stats.successful/max(stats.total_esim, 1)*100:.1f}%)
-├─ ❌ Failed: {stats.failed:,} ({stats.failed/max(stats.total_esim, 1)*100:.1f}%)
-└─ ⏭️  Skipped: {stats.skipped:,}
+    PROCESSING RESULTS:
+    ├─ ✅ Successful: {stats.successful:,} ({stats.successful/max(stats.total_esim, 1)*100:.1f}%)
+    │  ├─ Deactivated: {stats.deactivated:,}
+    │  └─ Already Expired: {stats.already_expired:,}
+    ├─ ❌ Failed: {stats.failed:,} ({stats.failed/max(stats.total_esim, 1)*100:.1f}%)
+    └─ ⏭️  Skipped: {stats.skipped:,}
 
-PERFORMANCE:
-├─ Success Rate: {stats.success_rate:.1f}%
-├─ Avg Processing Time: {stats.avg_processing_time_ms:.0f}ms per record
-└─ Total Processing Time: {stats.total_processing_time_s:.1f}s
+    PERFORMANCE:
+    ├─ Success Rate: {stats.success_rate:.1f}%
+    ├─ Avg Processing Time: {stats.avg_processing_time_ms:.0f}ms per record
+    └─ Total Processing Time: {stats.total_processing_time_s:.1f}s
 
-═══════════════════════════════════════════════════════════════
-"""
+    ═══════════════════════════════════════════════════════════════
+    """
         return summary
 
     def prepare_email_data(self,
-                          stats: ProcessingStats,
-                          results: List[ProcessingResult]) -> Dict[str, Any]:
+                      stats: ProcessingStats,
+                      results: List[ProcessingResult]) -> Dict[str, Any]:
         """
         Prepare data for email template.
 
@@ -381,9 +420,11 @@ PERFORMANCE:
                 'total_records': stats.total_records,
                 'total_esim': stats.total_esim,
                 'successful': stats.successful,
+                'deactivated': stats.deactivated,  # NOVO
+                'already_expired': stats.already_expired,  # NOVO
                 'failed': stats.failed,
                 'success_rate': f"{stats.success_rate:.1f}%",
-                'duration': str(stats.duration) if stats.duration else 'N/A'
+                'duration': stats.duration
             },
             'failed_samples': failed_samples,
             'action_button': {
@@ -405,7 +446,7 @@ PERFORMANCE:
         cutoff_date = datetime.now() - timedelta(days=self.retention_days)
 
         try:
-            for file_path in self.report_dir.glob("*.csv"):
+            for file_path in chain(self.report_dir.glob("*.csv"), self.report_dir.glob("*.json")):
                 # Check file modification time
                 file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
                 if file_mtime < cutoff_date:
