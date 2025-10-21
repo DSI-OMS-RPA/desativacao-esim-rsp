@@ -20,7 +20,7 @@
     },
     "report": {
         "from_mail": "dsi-suporte-rpa@cvt.cv",
-        "to": "joselito.coutinho@cvt.cv",
+        "to": "DCP-SAC@cvt.cv",
         "cc": [
             "luis.varela@cvt.cv",
             "alertas.rpa@cvt.cv"
