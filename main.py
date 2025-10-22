@@ -720,7 +720,7 @@ class ESIMDeactivationOrchestrator:
 
                         # Change "to" field values with "recipients" list
                         self.email_config['to'] = recipients
-                        self.email_config['cc'] = []
+                        self.email_config['cc'] = self.email_config.get('cc', [])
                         self.email_config['subject'] = f"[ALERTA] {self.config.process_name}"
 
                         # Prepare alert details
