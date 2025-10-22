@@ -686,6 +686,50 @@ class ESIMDeactivationOrchestrator:
         except Exception as e:
             self.logger.error(f"Error cleaning staging directory: {e}")
 
+    def _handle_no_files_found(self):
+        """Handle scenario when no files are found on FTP by sending a no files alert email with the appropriate details."""
+
+        if not self.config.no_files_alert or not self.email_sender:
+            self.logger.info("No files alert configuration missing or email sender not initialized")
+            return
+
+        # Get recipients from configuration
+        recipients = self.config.no_files_alert['recipients']
+
+        try:
+            self.logger.info("Sending no files alert...")
+
+            # Change "to" field values with "recipients" list
+            self.email_config['to'] = recipients
+            self.email_config['cc'] = self.email_config.get('cc', [])
+            self.email_config['subject'] = f"[ALERTA] {self.config.process_name}"
+
+            # Prepare alert details
+            alert_type="warning"
+            alert_title=f"Nenhum ficheiro XML encontrado"
+            alert_message="Nenhum ficheiro foi encontrado no servidor FTP para processamento.</br>Por favor, verifique se os ficheiros foram disponibilizados corretamente."
+            summary_data = [
+                { "label": "Data/Hora", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S') },
+                { "label": "Caminho FTP", "value": self.config.ftp_root_path },
+                { "label": "Padrão esperado", "value": self.config.file_pattern }
+            ]
+            environment=str(self.config.environment)
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Send email
+            self.email_sender.send_template_email(
+                report_config=self.email_config,
+                alert_type=alert_type,
+                alert_title=alert_title,
+                alert_message=alert_message,
+                summary_data=summary_data,
+                environment=environment.upper(),
+                timestamp=timestamp
+            )
+            self.logger.info("No files alert sent successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to send no files alert: {e}")
+
     def run(self) -> int:
         """
         Run the complete deactivation process.
@@ -710,46 +754,8 @@ class ESIMDeactivationOrchestrator:
 
             if not remote_files:
                 self.logger.warning("No files found to process")
-
-                # Send alert to supplier team
-                recipients = self.config.no_files_alert['recipients']
-
-                if recipients:
-                    try:
-                        self.logger.info("Sending no files alert...")
-
-                        # Change "to" field values with "recipients" list
-                        self.email_config['to'] = recipients
-                        self.email_config['cc'] = self.email_config.get('cc', [])
-                        self.email_config['subject'] = f"[ALERTA] {self.config.process_name}"
-
-                        # Prepare alert details
-                        alert_type="warning"
-                        alert_title=f"Nenhum ficheiro XML encontrado"
-                        alert_message="Nenhum ficheiro foi encontrado no servidor FTP para processamento.</br>Por favor, verifique se os ficheiros foram disponibilizados corretamente."
-                        summary_data = [
-                            { "label": "Data/Hora", "value": datetime.now().strftime('%Y-%m-%d %H:%M:%S') },
-                            { "label": "Caminho FTP", "value": self.config.ftp_root_path },
-                            { "label": "Padrão esperado", "value": self.config.file_pattern }
-                        ]
-                        environment=str(self.config.environment)
-                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-                        # Send email
-                        self.email_sender.send_template_email(
-                            report_config=self.email_config,
-                            alert_type=alert_type,
-                            alert_title=alert_title,
-                            alert_message=alert_message,
-                            summary_data=summary_data,
-                            environment=environment.upper(),
-                            timestamp=timestamp
-                        )
-                        self.logger.info("No files alert sent successfully")
-                    except Exception as e:
-                        self.logger.error(f"Failed to send no files alert: {e}")
-
-                return 0
+                self._handle_no_files_found()
+                return 0  # Exit gracefully if no files
 
             # 3. MAIN PROCESSING LOOP
             for remote_file in remote_files:
