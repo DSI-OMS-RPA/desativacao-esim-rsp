@@ -785,7 +785,7 @@ class ESIMDeactivationOrchestrator:
                 alert_type=email_data['alert_type'],
                 alert_title=email_data['alert_title'],
                 alert_message=email_data['alert_message'],
-                #table_data=email_data.get('table_data'),
+                table_data=email_data.get('table_data'),
                 environment=email_data['environment'],
                 timestamp=email_data['timestamp'],
                 attachment_paths=attachments
