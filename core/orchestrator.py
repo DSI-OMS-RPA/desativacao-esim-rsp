@@ -60,6 +60,7 @@ class ProcessConfig:
     reports_dir: str = "reports"
     ftp_root_path: str = "/SIEBEL/NGIN"
     ftp_done_folder: str = "done"
+    ftp_error_folder: str = "error"
     file_pattern: str = "NGIN_DataFile_*.xml"
     environment: str = "prod"  # test or prod
     env_path: str = "configs/.env"
@@ -695,6 +696,39 @@ class ESIMDeactivationOrchestrator:
             self.logger.error(f"Error processing file {filename}: {e}")
             return False, file_results
 
+    def _move_file_to_error(self, remote_file: str, error_reason: str = "") -> bool:
+        """
+        Move file to error folder on FTP server when processing fails.
+
+        Args:
+            remote_file: Remote file path
+            error_reason: Brief description of why file failed (for logging)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            dest_path = f"{self.config.ftp_root_path}/{self.config.ftp_error_folder}"
+            filename = os.path.basename(remote_file)
+
+            self.logger.warning(
+                f"Moving {filename} to error folder. Reason: {error_reason}"
+            )
+
+            self.ftp_client.move_file(remote_file, dest_path)
+
+            self.logger.info(
+                f"Successfully moved {filename} to error folder: {dest_path}"
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to move {remote_file} to error folder: {e}",
+                exc_info=True
+            )
+            return False
+
     def _move_file_to_done(self, remote_file: str) -> bool:
         """
         Move file to done folder on FTP server.
@@ -891,33 +925,63 @@ class ESIMDeactivationOrchestrator:
 
             # 3. MAIN PROCESSING LOOP
             for remote_file in remote_files:
+
+                filename = os.path.basename(remote_file)
+
                 self.logger.info(f"\n{'='*50}")
                 self.logger.info(f"Processing file: {remote_file}")
                 self.logger.info(f"{'='*50}")
 
-                # Download file
-                local_file = self._download_file(remote_file)
-                if not local_file:
-                    self.files_failed.append(remote_file)
-                    continue
-
-                # Process file
-                success, file_results = self._process_file(remote_file, local_file)
-                self.all_results.extend(file_results)
-
-                if success:
-                    # Move to done on FTP
-                    if self._move_file_to_done(remote_file):
-                        # Move local file to processed
-                        processed_path = Path(self.config.processed_dir) / os.path.basename(local_file)
-                        shutil.move(local_file, processed_path)
-                        self.files_processed.append(remote_file)
-                        self.logger.info(f"File {remote_file} processed successfully")
-                    else:
+                try:
+                    # Download file
+                    local_file = self._download_file(remote_file)
+                    if not local_file:
+                        error_msg = "Download failed"
                         self.files_failed.append(remote_file)
-                else:
-                    self.logger.warning(f"File {remote_file} failed processing threshold, not moved")
+                        self.logger.error(f"[{filename}] {error_msg}")
+                        self._move_file_to_error(remote_file, error_msg)
+                        continue
+
+                    # Process file
+                    success, file_results = self._process_file(remote_file, local_file)
+                    self.all_results.extend(file_results)
+
+                    if success:
+                        # Move to done on FTP
+                        if self._move_file_to_done(remote_file):
+                            # Move local file to processed
+                            processed_path = Path(self.config.processed_dir) / os.path.basename(local_file)
+                            shutil.move(local_file, processed_path)
+                            self.files_processed.append(remote_file)
+                            self.logger.info(f"File {remote_file} processed successfully")
+                        else:
+                            error_msg = "Failed to move file to done folder"
+                            self.logger.error(f"[{filename}] {error_msg}")
+                            self._move_file_to_error(remote_file, error_msg)
+                            self.files_failed.append(remote_file)
+                    else:
+                        # Threshold FAILED: move to error
+                        # Calcular taxa de sucesso para log
+                        total_esim = len([r for r in file_results if r.status in ["SUCCESS", "FAILED"]])
+                        if total_esim > 0:
+                            successful = len([r for r in file_results if r.status == "SUCCESS"])
+                            success_rate = (successful / total_esim) * 100
+                            error_msg = f"Success threshold failed ({success_rate:.1f}% < 95%)"
+                        else:
+                            error_msg = "No eSIM records processed"
+
+                        self.logger.warning(f"[{filename}] {error_msg}")
+                        self._move_file_to_error(remote_file, error_msg)
+                        self.files_failed.append(remote_file)
+
+                except Exception as e:
+                    # CATCH-ALL: qualquer erro não previsto
+                    error_msg = f"Unexpected error during processing: {str(e)}"
+                    self.logger.error(f"[{filename}] {error_msg}", exc_info=True)
+                    self._move_file_to_error(remote_file, error_msg)
                     self.files_failed.append(remote_file)
+                    # Continuar com próximo ficheiro
+                    continue
 
             # 4. REPORT GENERATION
             self.logger.info("\n" + "="*50)
