@@ -513,6 +513,30 @@ class ESIMRSPClient:
         }
         return self._make_request(endpoint, body=body)
 
+    def download_order(self, iccid: str) -> Dict[str, Any]:
+        """
+        Download/allocate a profile order for an AVAILABLE profile.
+        Initiates a new profile download order on RSP platform.
+
+        :param iccid: ICCID of the profile to download
+        :return: Response containing order information and execution status
+        :raises RSPClientRequestError: If API request fails
+        """
+        endpoint = '/redtea/rsp2/es2plus/downloadOrder'
+        body = {
+            "iccid": iccid,
+            "header": {
+                "functionRequesterIdentifier": str(uuid.uuid4()),
+                "functionCallIdentifier": "downloadOrder"
+            }
+        }
+
+        logger.info(f"[DownloadOrder] Initiating download order for ICCID={iccid}")
+        response = self._make_request(endpoint=endpoint, method='POST', body=body)
+        logger.info(f"[DownloadOrder] Success for ICCID={iccid}")
+
+        return response
+
     def expire_order(self, iccid: str, final_status: str = "Unavailable", matchingId: Optional[str] = None, eid: Optional[str] = None) -> Dict[str, Any]:
         """
         Chama o endpoint ExpireOrder para marcar o perfil como 'Unavailable' ou 'Available'.
