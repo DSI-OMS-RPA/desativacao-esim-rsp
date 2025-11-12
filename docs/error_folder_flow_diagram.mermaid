@@ -1,0 +1,75 @@
+graph TD
+    Start([Iniciar Processo]) --> Lock["🔒 Adquirir Lock"]
+    Lock --> Discover["📂 Descobrir ficheiros XML no FTP"]
+    Discover --> HasFiles{Ficheiros encontrados?}
+    
+    HasFiles -->|Não| NoFiles["⚠️ Alerta: Sem ficheiros"]
+    NoFiles --> End1([Fim])
+    
+    HasFiles -->|Sim| Loop["🔄 Para cada ficheiro..."]
+    Loop --> GetFile["📥 Download do FTP para staging/"]
+    
+    GetFile --> DownloadOK{Download bem-sucedido?}
+    
+    DownloadOK -->|Não| DownloadErr["❌ Erro: Download failed"]
+    DownloadErr --> MoveError1["➡️ mover para /error"]
+    MoveError1 --> AddFailed1["📊 Adicionar a files_failed"]
+    AddFailed1 --> LogError1["📝 Log: Download failed"]
+    
+    DownloadOK -->|Sim| ParseXML["🔍 Parse XML"]
+    ParseXML --> ParseOK{XML válido?}
+    
+    ParseOK -->|Não| ParseErr["❌ Erro: XML parsing failed"]
+    ParseErr --> MoveError2["➡️ mover para /error"]
+    MoveError2 --> AddFailed2["📊 Adicionar a files_failed"]
+    AddFailed2 --> LogError2["📝 Log: Parsing error"]
+    
+    ParseOK -->|Sim| Filter["🎯 Filtrar eSIM + DEACTIVATE"]
+    Filter --> Process["⚙️ Processar API (batches)"]
+    
+    Process --> ProcessOK{Processamento OK?}
+    
+    ProcessOK -->|Erro crítico| CritErr["❌ Erro: API/Connection"]
+    CritErr --> MoveError3["➡️ mover para /error"]
+    MoveError3 --> AddFailed3["📊 Adicionar a files_failed"]
+    AddFailed3 --> LogError3["📝 Log: API error"]
+    
+    ProcessOK -->|Sim| CalcRate["📈 Calcular taxa de sucesso"]
+    CalcRate --> CheckRate{Taxa ≥ 95%?}
+    
+    CheckRate -->|Sim| Success["✅ SUCESSO"]
+    Success --> MoveDone["➡️ mover para /done (FTP)"]
+    MoveDone --> MoveLocal["➡️ mover para /processed (local)"]
+    MoveLocal --> AddSuccess["📊 Adicionar a files_processed"]
+    AddSuccess --> LogSuccess["📝 Log: File processed successfully"]
+    
+    CheckRate -->|Não| ThreshErr["❌ Erro: Taxa < 95%"]
+    ThreshErr --> CalcRate2["📊 Calcular percentagem (ex: 80%)"]
+    CalcRate2 --> MoveError4["➡️ mover para /error com '%'"]
+    MoveError4 --> AddFailed4["📊 Adicionar a files_failed"]
+    AddFailed4 --> LogError4["📝 Log: Threshold failed (80%)"]
+    
+    LogError1 --> NextFile{Mais ficheiros?}
+    LogError2 --> NextFile
+    LogError3 --> NextFile
+    LogError4 --> NextFile
+    LogSuccess --> NextFile
+    
+    NextFile -->|Sim| Loop
+    NextFile -->|Não| Report["📊 Gerar relatórios"]
+    Report --> Email["📧 Enviar email"]
+    Email --> Cleanup["🧹 Cleanup"]
+    Cleanup --> EndOK["✓ Fim (exit 0)"]
+    Cleanup --> End2([Fim])
+    
+    style Success fill:#90EE90
+    style DownloadErr fill:#FFB6C6
+    style ParseErr fill:#FFB6C6
+    style CritErr fill:#FFB6C6
+    style ThreshErr fill:#FFB6C6
+    style MoveError1 fill:#FFE4B5
+    style MoveError2 fill:#FFE4B5
+    style MoveError3 fill:#FFE4B5
+    style MoveError4 fill:#FFE4B5
+    style MoveDone fill:#ADD8E6
+    style Loop fill:#E6E6FA
