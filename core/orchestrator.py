@@ -126,6 +126,7 @@ class ESIMDeactivationOrchestrator:
                 reports_dir=self.json_config.get("paths", {}).get("reports", "reports"),
                 ftp_root_path=self.ftp_config.get("path", "/SIEBEL/NGIN"),
                 ftp_done_folder=self.ftp_config.get("done_folder", "done"),
+                ftp_error_folder=self.ftp_config.get("error_folder", "error"),
                 file_pattern=process_cfg.get("file_pattern", "NGIN_DataFile_*.xml"),
                 environment=self.env_config.get("environment", "prod"),
                 env_path=process_cfg.get("env_path", "configs/.env"),
