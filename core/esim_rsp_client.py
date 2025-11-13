@@ -522,7 +522,7 @@ class ESIMRSPClient:
         :return: Response containing order information and execution status
         :raises RSPClientRequestError: If API request fails
         """
-        endpoint = '/redtea/rsp2/es2plus/downloadOrder'
+        endpoint = '/gsma/rsp2/es2plus/downloadOrder'
         body = {
             "iccid": iccid,
             "header": {
