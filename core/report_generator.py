@@ -68,10 +68,13 @@ class ProcessingStats:
     total_processing_time_s: float = 0
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
+    is_empty_processing: bool = False # Indica se nenhum ICCID foi processado
 
     @property
     def success_rate(self) -> float:
-        """Calculate success rate percentage."""
+        """Calculate success rate percentage, handling empty case."""
+        if self.total_esim == 0:
+            return 0.0  # Empty case: return 0.0, not NaN or error
         processable = self.successful + self.failed
         return (self.successful / processable * 100) if processable > 0 else 0.0
 
@@ -301,6 +304,9 @@ class ReportGenerator:
                 stats.start_time = min(timestamps)
                 stats.end_time = max(timestamps)
 
+        if stats.total_esim == 0:
+            stats.is_empty_processing = True
+
         logger.info(
             f"Statistics calculated: {stats.total_records} records, "
             f"{stats.success_rate:.1f}% success rate "
@@ -380,8 +386,13 @@ class ReportGenerator:
         Returns:
             Dictionary with email template data
         """
-        # Determine alert type based on success rate
-        if stats.success_rate >= 95:
+        # Determine alert type based on processing scenario
+        if stats.is_empty_processing:
+            # No eSIMs found scenario - check this FIRST
+            alert_type = 'warning'
+            alert_title = 'Nenhum registro eSIM processado'
+            alert_message = 'Não foram encontrados ICCIDs eSIM para desativar nos ficheiros.'
+        elif stats.success_rate >= 95:
             alert_type = 'success'
             alert_title = 'Desativação de cartões eSIM concluída com sucesso.'
             alert_message = f'Processo concluído com taxa de sucesso de {stats.success_rate:.1f}%.'

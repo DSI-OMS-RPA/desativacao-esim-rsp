@@ -98,6 +98,7 @@ class ESIMDeactivationOrchestrator:
         self.all_results: List[ProcessingResult] = []
         self.files_processed = []
         self.files_failed = []
+        self.files_empty = []
 
     def _load_configurations(self, config_path: Optional[str] = None):
         """Load all configuration files."""
@@ -656,6 +657,7 @@ class ESIMDeactivationOrchestrator:
 
             if not deactivations:
                 self.logger.warning(f"No eSIM deactivations found in {filename}")
+                self.files_empty.append(filename)
                 return True, file_results
 
             # Remove duplicates
@@ -807,23 +809,40 @@ class ESIMDeactivationOrchestrator:
             stats = reports.get('stats')
             email_data = self.report_generator.prepare_email_data(stats, self.all_results)
 
-            # Add attachments
+            # Add attachments only if eSIMs were found
             attachments = []
-            if reports.get('csv'):
-                attachments.append(reports['csv'])
-            if reports.get('summary_csv'):
-                attachments.append(reports['summary_csv'])
+            attachment_names = []
 
-            # Send email
+            # Only include attachments if there were actual eSIM records processed
+            if stats.total_esim > 0:
+                if reports.get('csv'):
+                    csv_path = reports['csv']
+                    attachments.append(csv_path)
+                    attachment_names.append(Path(csv_path).name)
+                    self.logger.info(f"CSV attachment: {Path(csv_path).name}")
+
+                if reports.get('summary_csv'):
+                    summary_path = reports['summary_csv']
+                    attachments.append(summary_path)
+                    attachment_names.append(Path(summary_path).name)
+                    self.logger.info(f"Summary attachment: {Path(summary_path).name}")
+
+                if attachments:
+                    self.logger.info(f"Total attachments: {len(attachments)}")
+            else:
+                self.logger.info("No eSIM records processed - attachments not included")
+
+            # Send email with conditional attachments
             success = self.email_sender.send_template_email(
                 report_config=self.email_config,
                 alert_type=email_data['alert_type'],
                 alert_title=email_data['alert_title'],
                 alert_message=email_data['alert_message'],
                 table_data=email_data.get('table_data'),
+                file_names=attachment_names if attachments else None,  # Only if eSIMs found
                 environment=email_data['environment'],
                 timestamp=email_data['timestamp'],
-                attachment_paths=attachments
+                attachment_paths=attachments if attachments else None  # Only if eSIMs found
             )
 
             if success:
@@ -956,7 +975,7 @@ class ESIMDeactivationOrchestrator:
                             self.files_processed.append(remote_file)
                             self.logger.info(f"File {remote_file} processed successfully")
                         else:
-                            error_msg = "Failed to move file to done folder"
+                            error_msg = "Falha ao mover o arquivo para a pasta concluída"
                             self.logger.error(f"[{filename}] {error_msg}")
                             self._move_file_to_error(remote_file, error_msg)
                             self.files_failed.append(remote_file)
@@ -967,9 +986,9 @@ class ESIMDeactivationOrchestrator:
                         if total_esim > 0:
                             successful = len([r for r in file_results if r.status == "SUCCESS"])
                             success_rate = (successful / total_esim) * 100
-                            error_msg = f"Success threshold failed ({success_rate:.1f}% < 95%)"
+                            error_msg = f"Falha no limite de sucesso ({success_rate:.1f}% < 95%)"
                         else:
-                            error_msg = "No eSIM records processed"
+                            error_msg = "Nenhum registro eSIM processado"
 
                         self.logger.warning(f"[{filename}] {error_msg}")
                         self._move_file_to_error(remote_file, error_msg)
@@ -977,14 +996,16 @@ class ESIMDeactivationOrchestrator:
 
                 except Exception as e:
                     # CATCH-ALL: qualquer erro não previsto
-                    error_msg = f"Unexpected error during processing: {str(e)}"
+                    error_msg = f"Erro inesperado durante o processamento: {str(e)}"
                     self.logger.error(f"[{filename}] {error_msg}", exc_info=True)
                     self._move_file_to_error(remote_file, error_msg)
                     self.files_failed.append(remote_file)
                     # Continuar com próximo ficheiro
                     continue
 
-            # 4. REPORT GENERATION
+            # 4. REPORT GENERATION AND EMAIL NOTIFICATION
+            # Generate reports and send email even if no eSIM records found
+            # (report_generator now handles empty scenario with warning email)M records to report
             self.logger.info("\n" + "="*50)
             self.logger.info("Generating reports...")
             reports = self._generate_reports()
